@@ -1,0 +1,30 @@
+# config.py
+
+# Keys to extract from CDS files for importance evaluation
+importance_keys = [
+    "gpa_importance",
+    "sat_act_importance",
+    "residency_importance",
+    "alumni_importance",
+    "volunteer_work"
+]
+
+# Weight mapping for importance levels
+weight_map = {
+    "Very Important": 1.0,
+    "Important": 0.9,
+    "Considered": 0.8,
+    "Not Considered": 0.0
+}
+
+# List of allowed importance levels
+importance_levels = list(weight_map.keys())
+
+# Mapping of scoring categories to CDS importance keys
+category_to_importance_key = {
+    'gpa': 'gpa_importance',
+    'sat_act': 'sat_act_importance',
+    'residency': 'residency_importance',
+    'alumni': 'alumni_importance',
+    'volunteer_work': 'volunteer_work'
+}
