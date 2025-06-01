@@ -1,0 +1,232 @@
+# scoring.py
+
+import os
+import pandas as pd
+from typing import Dict
+
+from config import (
+    importance_keys,
+    weight_map,
+    importance_levels,
+    category_to_importance_key
+)
+
+# 1. Load CDS Excel files from a folder and convert them into a dictionary
+def load_cds_from_folder(folder_path: str) -> Dict[str, Dict]:
+    cds_dict = {}
+
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.xlsx'):
+            # Normalize school key (e.g., "Georgia Tech.xlsx" → "georgia_tech")
+            school_key = filename.replace('.xlsx', '').lower().replace(' ', '_')
+            
+            # Read Excel file
+            file_path = os.path.join(folder_path, filename)
+            df = pd.read_excel(file_path, header=None)
+            keys = df.iloc[0].values
+            values = df.iloc[1].values
+            school_dict = dict(zip(keys, values))
+            
+            cds_dict[school_key] = school_dict
+
+    return cds_dict
+
+
+# 2. Calculate average importance weights from CDS dictionary
+def compute_average_importance_weights(
+    cds_dict: Dict[str, Dict],
+    importance_keys: List[str],
+    weight_map: Dict[str, float],
+    importance_levels: List[str]
+) -> Dict[str, float]:
+    # Count importance levels across schools
+    importance_counts = {key: Counter() for key in importance_keys}
+    for school_data in cds_dict.values():
+        for key in importance_keys:
+            value = school_data.get(key, "Not Considered")
+            if value in importance_levels:
+                importance_counts[key][value] += 1
+    
+    # Calculate weighted average for each category
+    average_weights = {}
+    for key in importance_keys:
+        total = sum(importance_counts[key].values())
+        weighted_sum = sum(weight_map[level] * count for level, count in importance_counts[key].items())
+        average_weights[key] = round(weighted_sum / total, 4) if total > 0 else 0
+    return average_weights
+
+
+# 3. Convert average weights into a 100-point scale
+def normalize_max_points_from_avg_weights(average_weights: Dict[str, float], total_points=100) -> Dict[str, float]:
+    total_weight = sum(average_weights.values())
+    return {
+        key.replace('_importance', ''): round((w / total_weight) * total_points, 2)
+        for key, w in average_weights.items()
+    }
+
+
+# 4. Calculate school-specific total maximum score based on weight map
+def calculate_total_max_score(school_info: Dict, max_points_by_cat: Dict[str, float]) -> float:
+    total = 0
+    for category, max_point in max_points_by_cat.items():
+        importance_key = category_to_importance_key.get(category)
+        if importance_key and importance_key in school_info:
+            importance = school_info[importance_key]
+            weight = weight_map.get(importance, 0)
+            total += max_point * weight
+    return total
+
+
+# 5. Unflatten dictionary -- helper
+def unflatten_dict(flat_dict: Dict[str, any]) -> Dict:
+    nested = {}
+    for compound_key, value in flat_dict.items():
+        parts = compound_key.split(".")
+        d = nested
+        for part in parts[:-1]:
+            if part not in d:
+                d[part] = {}
+            d = d[part]
+        d[parts[-1]] = value
+    return nested
+
+# 6. Main function to calculate applicant compatibility score with a school
+def calculate_compatibility_score(applicant: Dict, school_cds: Dict, max_points_by_cat: Dict[str, float]) -> Dict:
+    
+    school_cds = unflatten_dict(school_cds)
+    
+    # 1. Check essential requirments
+    if school_cds["high_school_completion_required"]:
+        if not applicant["high_school_completion"]:
+            return {"score": 0, "details": {"reason": "High school completion requirement not met"}}
+    
+    if school_cds["general_college_preparatory_required"]:
+        required_subjects = school_cds.get("general_college_subjects", {})
+        applicant_subjects = applicant.get("general_college_requirement", {})
+        
+        for subject, required_count in required_subjects.items():
+            applicant_count = applicant_subjects.get(subject, 0)
+            if applicant_count < required_count:
+                return {"score": 0, "details": {"reason": "Subject requirement not met"}}
+    
+    # 2. Check standardized test requirement
+    sat_required = school_cds["sat_act_required"].get("sat only", False)
+    act_required = school_cds["sat_act_required"].get("act only", False)
+    either_required = school_cds["sat_act_required"].get("sat or act", False)
+
+    sat = applicant.get("sat", 0)
+    act = applicant.get("act", 0)
+
+    if sat_required and sat == 0:
+        return {"score": 0, "details": {"reason": "SAT score required"}}
+    if act_required and act == 0:
+        return {"score": 0, "details": {"reason": "ACT score required"}}
+    if either_required and sat == 0 and act == 0:
+        return {"score": 0, "details": {"reason": "SAT or ACT score required"}}
+
+    ### 
+    total_score = 0
+    details = {}
+
+    # 3. Score for alumni relation
+    alumni_max = max_points_by_cat['alumni']
+    school_name = school_cds['school_name'].lower()
+    alumni_score = 0
+    if applicant['alumni']:
+        alumni_schools = [name.lower() for name in applicant.get("alumni_school_names", [])]
+        if school_name in alumni_schools:
+            alumni_score = alumni_max
+    alumni_weighted = alumni_score * weight_map[school_cds['alumni_importance']]
+    total_score += alumni_weighted
+    details["alumni"] = round(alumni_weighted, 2)
+
+    # 4. Score for first-generation status
+    #first_max = max_points_by_cat['first_generation']
+    #first_score = first_max if applicant['first'] else 0
+    #first_weighted = first_score * weight_map[school_cds['first_generation_importance']]
+    #total_score += first_weighted
+    #details["first_generation"] = round(first_weighted, 2)
+
+    # 5. Score based on residency acceptance rate
+    residency_max = max_points_by_cat['residency']
+    if applicant['residency'] == 'international':
+        residency_category = 'international'
+    else:
+        if applicant['state'] == school_cds['state']:
+            residency_category = 'in-state'
+        else:
+            residency_category = 'out-of-state'
+    residency_score = school_cds['residency_acceptance'][residency_category] * residency_max
+    residency_weighted = residency_score * weight_map[school_cds['residency_importance']]
+    total_score += residency_weighted
+    details["residency"] = round(residency_weighted, 2)
+    
+
+    # 6. Score based on SAT range position
+    sat = applicant['sat']
+    act = applicant['act']
+    sat_act_max = max_points_by_cat['sat_act']
+    
+    if sat > 0:
+        sat_q25 = school_cds['sat_scores']['25th']
+        sat_q75 = school_cds['sat_scores']['75th']
+
+        if sat < sat_q25:
+            sat_score = 0
+        elif sat > sat_q75:
+            sat_score = sat_act_max
+        else:
+            sat_score = ((sat - sat_q25) / (sat_q75 - sat_q25)) * sat_act_max
+            sat_score = min(sat_act_max, max(0, sat_score))
+        sat_weighted = sat_score * weight_map[school_cds['sat_act_importance']]
+        total_score += sat_weighted
+        details["sat"] = round(sat_weighted, 2)
+    
+    elif act > 0:
+        act_q25 = school_cds['act scores']['25th']
+        act_q75 = school_cds['act scores']['75th']
+        if act < act_q25:
+            act_score = 0
+        elif act > act_q75:
+            act_score = sat_act_max
+        else:
+            act_score = ((act - act_q25) / (act_q75 - act_q25)) * sat_act_max
+            act_score = min(sat_act_max, max(0, act_score))
+        act_weighted = act_score * weight_map[school_cds['sat_act_importance']]
+        total_score += act_weighted
+        details["act"] = round(act_weighted, 2)
+
+    # 7. Score based on GPA
+    gpa_max = max_points_by_cat['gpa']
+    gpa_score = (applicant['gpa'] / 4.0) * gpa_max
+    gpa_weighted = gpa_score * weight_map[school_cds['gpa_importance']]
+    total_score += gpa_weighted
+    details["gpa"] = round(gpa_weighted, 2)
+    
+    # 8. Score for volunteer work
+    volunteer_max = max_points_by_cat['volunteer_work']
+    volunteer = applicant['volunteering_hours']
+    if volunteer < 50:
+        volunteer_score = 0
+    elif volunteer >= 200:
+        volunteer_score = volunteer_max
+    else:
+        volunteer_score = volunteer / 200 * volunteer_max
+    
+    # 9. Score for work experience
+    
+    # 10. Calculate school-specific total max score
+    total_max_score = calculate_total_max_score(school_cds, max_points_by_cat)
+
+    # 11. Normalize total_score by total_max_score
+    if total_max_score > 0:
+        normalized_score = (total_score / total_max_score) * 100
+    else:
+        normalized_score = 0
+    
+    return {
+        "applicant": applicant["userId"],
+        "school": school_cds["school_name"],
+        "score": round(normalized_score, 2), 
+        "details": details
+    }
