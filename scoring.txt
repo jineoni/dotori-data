@@ -8,7 +8,8 @@ from config import (
     importance_keys,
     weight_map,
     importance_levels,
-    category_to_importance_key
+    category_to_importance_key, 
+    school_list
 )
 
 # 1. Load CDS Excel files from a folder and convert them into a dictionary
@@ -16,7 +17,7 @@ def load_cds_from_folder(folder_path: str) -> Dict[str, Dict]:
     cds_dict = {}
 
     for filename in os.listdir(folder_path):
-        if filename.endswith('.xlsx'):
+        if filename.endswith('.xlsx'):w
             # Normalize school key (e.g., "Georgia Tech.xlsx" → "georgia_tech")
             school_key = filename.replace('.xlsx', '').lower().replace(' ', '_')
             
@@ -33,12 +34,7 @@ def load_cds_from_folder(folder_path: str) -> Dict[str, Dict]:
 
 
 # 2. Calculate average importance weights from CDS dictionary
-def compute_average_importance_weights(
-    cds_dict: Dict[str, Dict],
-    importance_keys: List[str],
-    weight_map: Dict[str, float],
-    importance_levels: List[str]
-) -> Dict[str, float]:
+def compute_average_importance_weights(cds_dict: Dict[str, Dict]) -> Dict[str, float]:
     # Count importance levels across schools
     importance_counts = {key: Counter() for key in importance_keys}
     for school_data in cds_dict.values():
@@ -90,7 +86,14 @@ def unflatten_dict(flat_dict: Dict[str, any]) -> Dict:
         d[parts[-1]] = value
     return nested
 
-# 6. Main function to calculate applicant compatibility score with a school
+# 6. Mapping school name to school id -- helper
+def get_school_id_by_name(school_name: str) -> int:
+    for school in school_list:
+        if school["name"].lower() == school_name.lower():
+            return school["id"]
+    return -1  # fallback if not found
+
+# 7. Main function to calculate applicant compatibility score with a school
 def calculate_compatibility_score(applicant: Dict, school_cds: Dict, max_points_by_cat: Dict[str, float]) -> Dict:
     
     school_cds = unflatten_dict(school_cds)
@@ -226,7 +229,7 @@ def calculate_compatibility_score(applicant: Dict, school_cds: Dict, max_points_
     
     return {
         "applicant": applicant["userId"],
-        "school": school_cds["school_name"],
+        "school_id": school_cds["school_name"],
         "score": round(normalized_score, 2), 
         "details": details
     }
